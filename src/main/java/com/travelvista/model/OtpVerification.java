@@ -16,6 +16,14 @@ public class OtpVerification {
     @Column(nullable = false, length = 10)
     private String code;
 
+    /** Optional server-side transaction binding for authentication flows. */
+    @Column(name = "transaction_id", length = 64)
+    private String transactionId;
+
+    /** Salted BCrypt hash for new OTPs; legacy SHA-256 auth rows require a new challenge. */
+    @Column(name = "code_hash", length = 64)
+    private String codeHash;
+
     @Column(nullable = false, length = 50)
     private String purpose; // "edit_enquiry", "delete_enquiry", "edit_lead", "delete_lead"
 
@@ -57,6 +65,11 @@ public class OtpVerification {
     public void setEmail(String email) { this.email = email; }
     public String getCode() { return code; }
     public void setCode(String code) { this.code = code; }
+    public String getTransactionId() { return transactionId; }
+    public void setTransactionId(String transactionId) { this.transactionId = transactionId; }
+    public String getCodeHash() { return codeHash; }
+    public void setCodeHash(String codeHash) { this.codeHash = codeHash; }
+
     public String getPurpose() { return purpose; }
     public void setPurpose(String purpose) { this.purpose = purpose; }
     public Long getRecordId() { return recordId; }
@@ -75,7 +88,7 @@ public class OtpVerification {
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 
     public boolean isExpired() {
-        return LocalDateTime.now().isAfter(this.expiresAt);
+        return !LocalDateTime.now().isBefore(this.expiresAt);
     }
 
     public boolean isMaxAttemptsExceeded() {

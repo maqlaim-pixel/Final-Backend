@@ -40,8 +40,14 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     String role = jwtUtil.extractRole(token);
 
                     User user = userRepository.findByEmail(email).orElse(null);
-                    if (user != null && user.getIsActive()) {
-                        var authorities = List.of(new SimpleGrantedAuthority("ROLE_" + role));
+                    boolean adminRole = user != null && user.getRole() != null
+                            && ("admin".equals(user.getRole().getName())
+                            || "super_admin".equals(user.getRole().getName())
+                            || "content_manager".equals(user.getRole().getName())
+                            || "editor".equals(user.getRole().getName()));
+                    if (user != null && Boolean.TRUE.equals(user.getIsActive())
+                            && (adminRole || Boolean.TRUE.equals(user.getEmailVerified()))) {
+                        var authorities = List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().getName()));
                         var auth = new UsernamePasswordAuthenticationToken(
                                 user, null, authorities);
                         SecurityContextHolder.getContext().setAuthentication(auth);

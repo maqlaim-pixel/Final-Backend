@@ -38,11 +38,18 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .csrf(csrf -> csrf.disable())
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .exceptionHandling(ex -> ex.authenticationEntryPoint((req, res, error) -> {
+                res.setStatus(401); res.setContentType("application/json"); res.getWriter().write("{\"error\":\"Authentication required\"}");
+            }))
             .authorizeHttpRequests(auth -> auth
                 // ── Public endpoints (no auth needed) ──
                 .requestMatchers(AntPathRequestMatcher.antMatcher(HttpMethod.POST, "/api/admin/login")).permitAll()
-                .requestMatchers(AntPathRequestMatcher.antMatcher(HttpMethod.GET, "/api/admin/me")).permitAll()
-                .requestMatchers(AntPathRequestMatcher.antMatcher("/api/auth/**")).permitAll()
+                
+                .requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/register/verify", "/api/auth/register/resend",
+                    "/api/auth/login", "/api/auth/login/verify", "/api/auth/login/otp/send", "/api/auth/login/otp/verify",
+                    "/api/auth/login/otp/resend", "/api/auth/forgot-password", "/api/auth/forgot-password/verify", "/api/auth/reset-password").permitAll()
+                .requestMatchers("/api/admin/**").hasAnyRole("admin", "super_admin", "content_manager", "editor")
+                .requestMatchers("/api/auth/me").hasRole("customer")
                 .requestMatchers(AntPathRequestMatcher.antMatcher(HttpMethod.GET, "/api/packages/**")).permitAll()
                 .requestMatchers(AntPathRequestMatcher.antMatcher(HttpMethod.GET, "/api/destinations/**")).permitAll()
                 .requestMatchers(AntPathRequestMatcher.antMatcher(HttpMethod.GET, "/api/hotels/**")).permitAll()

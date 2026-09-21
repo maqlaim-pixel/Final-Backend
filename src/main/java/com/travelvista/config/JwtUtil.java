@@ -15,11 +15,10 @@ public class JwtUtil {
     @Value("${jwt.secret}")
     private String secret;
 
-    @Value("${jwt.expiration}")
-    private long expiration;
+    // Customer sessions use the configured one-hour lifetime; admin sessions keep their existing two-hour lifetime.
+    @Value("${jwt.expiration:3600000}")
+    private long userExpirationMs = 3600000L;
 
-    // Role-based expiration: 1 hour for users, 2 hours for admins
-    private static final long USER_EXPIRATION = 3600000L;    // 1 hour
     private static final long ADMIN_EXPIRATION = 7200000L;   // 2 hours
 
     private SecretKey getSigningKey() {
@@ -28,24 +27,26 @@ public class JwtUtil {
 
     public String generateToken(String email, String role, String name) {
         // Use role-based expiration
-        long exp = isAdminRole(role) ? ADMIN_EXPIRATION : USER_EXPIRATION;
+        long exp = isAdminRole(role) ? ADMIN_EXPIRATION : userExpirationMs;
+        long now = System.currentTimeMillis();
         return Jwts.builder()
                 .subject(email)
                 .claim("role", role)
                 .claim("name", name)
-                .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + exp))
+                .issuedAt(new Date(now))
+                .expiration(new Date(now + exp))
                 .signWith(getSigningKey())
                 .compact();
     }
 
     public String generateToken(String email, String role, String name, long customExpiration) {
+        long now = System.currentTimeMillis();
         return Jwts.builder()
                 .subject(email)
                 .claim("role", role)
                 .claim("name", name)
-                .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + customExpiration))
+                .issuedAt(new Date(now))
+                .expiration(new Date(now + customExpiration))
                 .signWith(getSigningKey())
                 .compact();
     }
@@ -55,7 +56,7 @@ public class JwtUtil {
     }
 
     public long getExpirationMs(String role) {
-        return isAdminRole(role) ? ADMIN_EXPIRATION : USER_EXPIRATION;
+        return isAdminRole(role) ? ADMIN_EXPIRATION : userExpirationMs;
     }
 
     public String extractEmail(String token) {

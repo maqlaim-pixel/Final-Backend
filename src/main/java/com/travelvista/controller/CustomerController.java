@@ -105,7 +105,12 @@ public class CustomerController {
             user.setName(body.get("name").toString());
         }
         if (body.containsKey("phone")) {
-            user.setPhone(body.get("phone") != null ? body.get("phone").toString() : null);
+            String phone = com.travelvista.service.UserService.normalizePhone(
+                    body.get("phone") == null ? null : body.get("phone").toString());
+            User owner = userRepository.findByPhone(phone).orElse(null);
+            if (owner != null && !owner.getId().equals(user.getId()))
+                throw new com.travelvista.service.AuthFailure(400, "Phone number is already registered");
+            user.setPhone(phone);
         }
         if (body.containsKey("profileImage")) {
             user.setProfileImage(body.get("profileImage") != null ? body.get("profileImage").toString() : null);

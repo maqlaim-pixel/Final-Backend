@@ -45,3 +45,7 @@ uploads/
 
 # ─── Legacy (kept locally, not tracked) ───
 backend-java/
+
+.env
+.env.*
+!.env.example

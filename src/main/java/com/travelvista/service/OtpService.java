@@ -2,157 +2,254 @@ package com.travelvista.service;
 
 import com.travelvista.model.OtpVerification;
 import com.travelvista.repository.OtpVerificationRepository;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.SimpleMailMessage;
-import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
-import java.util.Random;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
+/** Central OTP orchestration. Authentication OTPs are email-only. */
 @Service
 public class OtpService {
+    private final BCryptPasswordEncoder otpEncoder = new BCryptPasswordEncoder();
 
-    private final OtpVerificationRepository otpRepo;
-    private final JavaMailSender mailSender;
+    public static final String PURPOSE_REGISTER_EMAIL = "register_email";
+    public static final String PURPOSE_LOGIN_EMAIL = "login_email";
+    public static final String PURPOSE_FORGOT_PASSWORD = "forgot_password";
 
-    @Value("${spring.mail.username:}")
-    private String mailFrom;
+    /** Kept as a source-compatible alias for older callers; it is email-backed now. */
+    public static final String PURPOSE_REGISTER_PHONE = PURPOSE_REGISTER_EMAIL;
+    public static final String PURPOSE_LOGIN_PHONE = PURPOSE_LOGIN_EMAIL;
 
-    private static final int OTP_LENGTH = 6;
+    private static final String AUTH_RECORD_TYPE = "auth";
     private static final int OTP_EXPIRY_MINUTES = 10;
     private static final int MAX_OTPS_PER_HOUR = 10;
+    private static final long RESEND_COOLDOWN_SECONDS = 60;
 
-    public OtpService(OtpVerificationRepository otpRepo, JavaMailSender mailSender) {
+    private final OtpVerificationRepository otpRepo;
+    private final EmailOtpService emailOtpService;
+    private final ConcurrentMap<String, Long> lastSendAt = new ConcurrentHashMap<>();
+
+    public OtpService(OtpVerificationRepository otpRepo, EmailOtpService emailOtpService) {
         this.otpRepo = otpRepo;
-        this.mailSender = mailSender;
+        this.emailOtpService = emailOtpService;
     }
 
-    /**
-     * Generate and send an OTP for a specific purpose (edit/delete enquiry/lead).
-     * Returns the OTP record or throws an exception.
-     */
+    // Legacy enquiry/lead OTP flows.
     public OtpVerification generateAndSendOtp(String email, String purpose, Long recordId, String recordType) {
-        // Rate limiting: max 10 OTPs per hour per email
-        long recentCount = otpRepo.countRecentByEmail(email, LocalDateTime.now().minusHours(1));
-        if (recentCount >= MAX_OTPS_PER_HOUR) {
-            throw new RuntimeException("Too many OTP requests. Please try again later.");
-        }
-
-        // Generate 6-digit OTP
-        String code = generateCode();
-
-        // Create OTP record (expires in 10 minutes)
-        OtpVerification otp = new OtpVerification(
-                email, code, purpose, recordId, recordType,
-                LocalDateTime.now().plusMinutes(OTP_EXPIRY_MINUTES)
-        );
+        String normalized = normalizeEmail(email);
+        checkResendCooldown(normalized, purpose);
+        rateLimit(normalized, purpose);
+        String code = emailOtpService.generateOtp();
+        OtpVerification otp = newHashedOtp(normalized, code, purpose, recordId, recordType, null);
         otpRepo.save(otp);
-
-        // Send email
-        sendOtpEmail(email, code, purpose);
-
+        emailOtpService.sendOtpEmail(normalized, code, null);
+        markSent(normalized, purpose);
         return otp;
     }
 
-    /**
-     * Verify an OTP code. Returns true if valid, false otherwise.
-     */
     public boolean verifyOtp(String email, String purpose, Long recordId, String recordType, String code) {
         Optional<OtpVerification> optOtp = otpRepo.findTopByEmailAndPurposeAndRecordTypeAndRecordIdOrderByCreatedAtDesc(
-                email, purpose, recordType, recordId);
-
-        if (optOtp.isEmpty()) {
-            return false;
-        }
-
+                normalizeEmail(email), purpose, recordType, recordId);
+        if (optOtp.isEmpty()) return false;
         OtpVerification otp = optOtp.get();
-
-        // Check if already verified
-        if (otp.getVerified()) {
-            return true;
-        }
-
-        // Check max attempts
-        if (otp.isMaxAttemptsExceeded()) {
-            throw new RuntimeException("Too many failed attempts. Please request a new OTP.");
-        }
-
-        // Check expiry
-        if (otp.isExpired()) {
-            throw new RuntimeException("OTP has expired. Please request a new OTP.");
-        }
-
-        // Increment attempts
+        if (Boolean.TRUE.equals(otp.getVerified())) return false;
+        validateAttemptWindow(otp);
         otp.setAttempts(otp.getAttempts() + 1);
-
-        // Check code
-        if (otp.getCode().equals(code)) {
-            otp.setVerified(true);
-            otpRepo.save(otp);
-            return true;
-        }
-
+        boolean ok = matches(otp, code);
+        if (ok) otp.setVerified(true);
         otpRepo.save(otp);
-        return false;
+        return ok;
     }
 
-    /**
-     * Check if a verified OTP exists for the given purpose.
-     */
     public boolean hasVerifiedOtp(String email, String purpose, Long recordId, String recordType) {
         Optional<OtpVerification> optOtp = otpRepo.findTopByEmailAndPurposeAndRecordTypeAndRecordIdOrderByCreatedAtDesc(
-                email, purpose, recordType, recordId);
-        return optOtp.isPresent() && optOtp.get().getVerified() && !optOtp.get().isExpired();
+                normalizeEmail(email), purpose, recordType, recordId);
+        return optOtp.isPresent() && Boolean.TRUE.equals(optOtp.get().getVerified()) && !optOtp.get().isExpired();
     }
 
-    /**
-     * Invalidate all OTPs for a record after successful action.
-     */
     public void invalidateOtps(String email, String purpose, Long recordId, String recordType) {
         var otps = otpRepo.findByEmailAndPurposeAndRecordTypeAndRecordIdAndVerifiedFalse(
-                email, purpose, recordType, recordId);
+                normalizeEmail(email), purpose, recordType, recordId);
         for (OtpVerification otp : otps) {
-            otp.setVerified(true); // Mark as used
+            otp.setVerified(true);
             otpRepo.save(otp);
         }
     }
 
-    private String generateCode() {
-        Random random = new Random();
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < OTP_LENGTH; i++) {
-            sb.append(random.nextInt(10));
+    // Authentication OTPs: every authentication challenge is sent to email.
+    @Transactional(noRollbackFor = AuthFailure.class)
+    public String sendAuthOtp(String channel, String email, String phone, String userName, String purpose) {
+        String identifier = normalizeEmail(email);
+        if (identifier == null || identifier.isBlank()) {
+            throw new IllegalArgumentException("Email is required");
         }
-        return sb.toString();
+
+        checkResendCooldown(identifier, purpose);
+        rateLimit(identifier, purpose);
+
+        String transactionId = UUID.randomUUID().toString();
+        String code = emailOtpService.generateOtp();
+        // Delivery failure must not invalidate the previous challenge or authorize a new one.
+        if (!emailOtpService.sendOtpEmail(identifier, code, userName))
+            throw new AuthFailure(502, "Unable to send OTP email. Please try again.");
+        for (OtpVerification old : otpRepo.findByEmailAndPurposeAndVerifiedFalse(identifier, purpose)) {
+            old.setVerified(true);
+            old.setExpiresAt(LocalDateTime.now());
+            otpRepo.save(old);
+        }
+        otpRepo.save(newHashedOtp(identifier, code, purpose, 0L, AUTH_RECORD_TYPE, transactionId));
+        markSent(identifier, purpose);
+        return transactionId;
     }
 
-    private void sendOtpEmail(String to, String code, String purpose) {
-        try {
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom(mailFrom != null && !mailFrom.isEmpty() ? mailFrom : "noreply@travelvista.com");
-            message.setTo(to);
-            message.setSubject("Your TravelVista Verification Code");
+    @Transactional(noRollbackFor = AuthFailure.class)
+    public String sendEmailOtp(String email, String purpose, String userName) {
+        return sendAuthOtp("email", email, null, userName, purpose);
+    }
 
-            String action = purpose.contains("edit") ? "edit" : "delete";
-            String itemType = purpose.contains("enquiry") ? "enquiry" : "lead";
+    public String sendAuthOtp(String channel, String email, String phone, String userName) {
+        return sendAuthOtp("email", email, null, userName, PURPOSE_LOGIN_EMAIL);
+    }
 
-            message.setText(
-                "Hello,\n\n" +
-                "Your verification code for " + action + "ing your " + itemType + " is:\n\n" +
-                "   " + code + "\n\n" +
-                "This code will expire in 10 minutes.\n\n" +
-                "If you did not request this code, please ignore this email.\n\n" +
-                " Regards,\n" +
-                "TravelVista Team"
-            );
+    /** Channel is accepted for compatibility, but authentication is always email-backed. */
+    public boolean verifyAuthOtp(String channel, String email, String phone, String code,
+                                 String purpose, String transactionId) {
+        return verifyEmailOtp(email, code, purpose, transactionId);
+    }
 
-            mailSender.send(message);
-        } catch (Exception e) {
-            System.err.println("Failed to send OTP email to " + to + ": " + e.getMessage());
-            // Don't throw — allow the OTP to be returned even if email fails
-            // In production, you'd want to handle this better
+    public boolean verifyAuthOtp(String channel, String email, String phone, String code) {
+        return verifyEmailOtp(email, code, PURPOSE_LOGIN_EMAIL, null);
+    }
+
+    @Transactional(noRollbackFor = AuthFailure.class)
+    public boolean verifyEmailOtp(String email, String code, String purpose, String transactionId) {
+        String normalized = normalizeEmail(email);
+        Optional<OtpVerification> opt = transactionId == null
+                ? otpRepo.findTopByEmailAndPurposeAndRecordTypeOrderByCreatedAtDesc(normalized, purpose, AUTH_RECORD_TYPE)
+                : otpRepo.findTopByEmailAndPurposeAndRecordTypeAndTransactionIdOrderByCreatedAtDesc(
+                        normalized, purpose, AUTH_RECORD_TYPE, transactionId);
+        if (opt.isEmpty()) return false;
+
+        OtpVerification otp = opt.get();
+        if (Boolean.TRUE.equals(otp.getVerified())) return false;
+        validateAttemptWindow(otp);
+        otp.setAttempts(otp.getAttempts() + 1);
+        boolean ok = matches(otp, code);
+        if (ok) otp.setVerified(true);
+        otpRepo.save(otp);
+        return ok;
+    }
+
+    public boolean verifyEmailOtp(String email, String code, String purpose) {
+        return verifyEmailOtp(email, code, purpose, null);
+    }
+
+    public boolean hasPendingLoginOtp(String email, String transactionId) {
+        if (transactionId == null || transactionId.isBlank()) return false;
+        return otpRepo.findTopByEmailAndPurposeAndRecordTypeAndTransactionIdOrderByCreatedAtDesc(
+                normalizeEmail(email), PURPOSE_LOGIN_EMAIL, AUTH_RECORD_TYPE, transactionId)
+                .filter(otp -> !Boolean.TRUE.equals(otp.getVerified()) && !otp.isExpired()).isPresent();
+    }
+
+    public boolean hasVerifiedForgotPasswordOtp(String email, String transactionId) {
+        Optional<OtpVerification> opt = otpRepo
+                .findTopByEmailAndPurposeAndRecordTypeAndTransactionIdOrderByCreatedAtDesc(
+                        normalizeEmail(email), PURPOSE_FORGOT_PASSWORD, AUTH_RECORD_TYPE, transactionId);
+        return opt.isPresent() && Boolean.TRUE.equals(opt.get().getVerified()) && !opt.get().isExpired();
+    }
+
+    public void consumeForgotPasswordOtp(String email, String transactionId) {
+        Optional<OtpVerification> opt = otpRepo
+                .findTopByEmailAndPurposeAndRecordTypeAndTransactionIdOrderByCreatedAtDesc(
+                        normalizeEmail(email), PURPOSE_FORGOT_PASSWORD, AUTH_RECORD_TYPE, transactionId);
+        if (opt.isPresent()) {
+            OtpVerification otp = opt.get();
+            otp.setVerified(true);
+            otp.setExpiresAt(LocalDateTime.now());
+            otpRepo.save(otp);
         }
+    }
+
+    public boolean hasVerifiedForgotPasswordOtp(String email) {
+        Optional<OtpVerification> opt = otpRepo.findTopByEmailAndPurposeAndRecordTypeOrderByCreatedAtDesc(
+                normalizeEmail(email), PURPOSE_FORGOT_PASSWORD, AUTH_RECORD_TYPE);
+        return opt.isPresent() && Boolean.TRUE.equals(opt.get().getVerified()) && !opt.get().isExpired();
+    }
+
+    public void consumeForgotPasswordOtp(String email) {
+        List<OtpVerification> otps = otpRepo.findByEmailAndPurposeAndVerifiedFalse(
+                normalizeEmail(email), PURPOSE_FORGOT_PASSWORD);
+        for (OtpVerification otp : otps) {
+            otp.setVerified(true);
+            otpRepo.save(otp);
+        }
+    }
+
+    private OtpVerification newHashedOtp(String identifier, String code, String purpose,
+                                         Long recordId, String recordType, String transactionId) {
+        OtpVerification otp = new OtpVerification();
+        otp.setEmail(identifier);
+        otp.setCode("");
+        otp.setCodeHash(otpEncoder.encode(code));
+        otp.setPurpose(purpose);
+        otp.setRecordId(recordId);
+        otp.setRecordType(recordType);
+        otp.setTransactionId(transactionId);
+        otp.setCreatedAt(LocalDateTime.now());
+        otp.setExpiresAt(otp.getCreatedAt().plusMinutes(OTP_EXPIRY_MINUTES));
+        return otp;
+    }
+
+    private boolean matches(OtpVerification otp, String code) {
+        if (!AUTH_RECORD_TYPE.equals(otp.getRecordType()) && otp.getCodeHash() != null && !otp.getCodeHash().startsWith("$2"))
+            return otp.getCodeHash().equals(EmailOtpService.hashOtp(code, otp.getEmail()));
+        return code != null && otp.getCodeHash() != null && otp.getCodeHash().startsWith("$2")
+                && otpEncoder.matches(code, otp.getCodeHash());
+    }
+
+    private void validateAttemptWindow(OtpVerification otp) {
+        if (otp.isMaxAttemptsExceeded()) {
+            throw new AuthFailure(429, "Too many failed attempts. Please request a new OTP.");
+        }
+        if (otp.isExpired()) {
+            throw new AuthFailure(400, "OTP expired. Please request a new OTP.");
+        }
+    }
+
+    private void checkResendCooldown(String identifier, String purpose) {
+        otpRepo.findTopByEmailAndPurposeAndRecordTypeOrderByCreatedAtDesc(identifier, purpose, AUTH_RECORD_TYPE)
+                .ifPresent(otp -> {
+                    if (otp.getCreatedAt().plusSeconds(RESEND_COOLDOWN_SECONDS).isAfter(LocalDateTime.now()))
+                        throw new AuthFailure(429, "Please wait before requesting another OTP");
+                });
+        Long last = lastSendAt.get(identifier + ":" + purpose);
+        if (last != null) {
+            long elapsed = System.currentTimeMillis() / 1000 - last;
+            if (elapsed < RESEND_COOLDOWN_SECONDS) {
+                throw new AuthFailure(429, "Please wait " + (RESEND_COOLDOWN_SECONDS - elapsed)
+                        + "s before requesting another OTP.");
+            }
+        }
+    }
+
+    private void markSent(String identifier, String purpose) {
+        lastSendAt.put(identifier + ":" + purpose, System.currentTimeMillis() / 1000);
+    }
+
+    private void rateLimit(String identifier, String purpose) {
+        long recent = otpRepo.countRecentByEmailAndPurpose(identifier, purpose, LocalDateTime.now().minusHours(1));
+        if (recent >= MAX_OTPS_PER_HOUR) {
+            throw new AuthFailure(429, "Too many OTP requests. Please try again later.");
+        }
+    }
+
+    public static String normalizeEmail(String email) {
+        return email == null ? null : email.trim().toLowerCase(java.util.Locale.ROOT);
     }
 }

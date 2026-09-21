@@ -74,10 +74,18 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Email for OTP -->
+        <!-- Twilio Verify (phone OTP) -->
+        <dependency>
+            <groupId>com.twilio.sdk</groupId>
+            <artifactId>twilio</artifactId>
+            <version>10.7.1</version>
+        </dependency>
+
+        <!-- Testing -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-mail</artifactId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
         </dependency>
 
         <!-- Cloudinary for cloud image storage -->

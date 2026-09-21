@@ -17,6 +17,10 @@ import java.util.Optional;
 
 @Component
 public class DataInitializer implements CommandLineRunner {
+    @org.springframework.beans.factory.annotation.Value("${BOOTSTRAP_ADMIN_PASSWORD:}")
+    private String bootstrapAdminPassword;
+    @org.springframework.beans.factory.annotation.Value("${BOOTSTRAP_EDITOR_PASSWORD:}")
+    private String bootstrapEditorPassword;
 
     private final RoleRepository roleRepository;
     private final UserRepository userRepository;
@@ -63,18 +67,18 @@ public class DataInitializer implements CommandLineRunner {
         Role customer = getOrCreateRole("customer", "Regular website user");
 
         // ── Admin User ────────────────────────────────────────────────
-        if (!userRepository.existsByEmail("admin@travelvista.com")) {
+        if (!userRepository.existsByEmail("admin@travelvista.com") && !bootstrapAdminPassword.isBlank()) {
             User admin = new User("Admin", "admin@travelvista.com",
-                    passwordEncoder.encode("admin123"), superAdmin);
+                    passwordEncoder.encode(bootstrapAdminPassword), superAdmin);
             userRepository.save(admin);
-            System.out.println("  ✅ Admin user created: admin@travelvista.com / admin123");
+            System.out.println("  Admin user created from environment configuration");
         }
 
-        if (!userRepository.existsByEmail("editor@travelvista.com")) {
+        if (!userRepository.existsByEmail("editor@travelvista.com") && !bootstrapEditorPassword.isBlank()) {
             User editorUser = new User("Editor", "editor@travelvista.com",
-                    passwordEncoder.encode("editor123"), editor);
+                    passwordEncoder.encode(bootstrapEditorPassword), editor);
             userRepository.save(editorUser);
-            System.out.println("  ✅ Editor user created: editor@travelvista.com / editor123");
+            System.out.println("  Editor user created from environment configuration");
         }
 
         // ── Packages ──────────────────────────────────────────────────

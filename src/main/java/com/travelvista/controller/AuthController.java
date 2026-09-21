@@ -20,18 +20,40 @@ public class AuthController {
         this.userService = userService;
     }
 
+    /**
+     * Admin login is intentionally password-only. Customer OTP enforcement is
+     * handled by CustomerAuthController; this endpoint is reserved for admins.
+     */
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest request) {
         if (request.getEmail() == null || request.getPassword() == null) {
             return ResponseEntity.badRequest().body(Map.of("error", "Email and password are required"));
         }
 
-        LoginResponse response = userService.login(request);
-        if (response == null) {
+        User user = userService.verifyCredentials(request);
+        if (user == null) {
             return ResponseEntity.status(401).body(Map.of("error", "Invalid credentials"));
         }
 
-        return ResponseEntity.ok(response);
+        String role = user.getRole() == null ? "" : user.getRole().getName();
+        if (!("admin".equals(role) || "super_admin".equals(role)
+                || "content_manager".equals(role) || "editor".equals(role))) {
+            return ResponseEntity.status(403).body(Map.of("error", "Admin access required"));
+        }
+
+        return ResponseEntity.ok(userService.toLoginResponse(user));
+    }
+
+    private static String maskEmail(String email) {
+        if (email == null) return "";
+        int at = email.indexOf('@');
+        if (at <= 1) return email;
+        return email.charAt(0) + "*****" + email.substring(at);
+    }
+
+    private static String maskPhone(String phone) {
+        if (phone == null || phone.length() < 4) return "";
+        return phone.substring(0, phone.length() - 4).replaceAll(".", "*") + phone.substring(phone.length() - 4);
     }
 
     @GetMapping("/me")
