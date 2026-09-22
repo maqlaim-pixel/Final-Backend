@@ -313,7 +313,8 @@ public class SecurityConfig {
         // Local frontend + deployed Vercel frontend
         config.setAllowedOrigins(List.of(
                 "http://localhost:5173",
-                "https://final-frontend-jet-zeta.vercel.app"
+                "https://final-frontend-jet-zeta.vercel.app",
+                "https://final-frontend-git-main-dhavalmaqlaim-5177.vercel.app"
         ));
 
         config.setAllowedMethods(List.of(
