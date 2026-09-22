@@ -13,14 +13,19 @@ public interface InvoiceRepository extends JpaRepository<Invoice, Long> {
 
     Optional<Invoice> findByInvoiceNumber(String invoiceNumber);
 
-    Optional<Invoice> findByBookingId(Long bookingId);
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"booking", "user", "items"})
+    Optional<Invoice> findDetailedById(Long id);
 
-    List<Invoice> findByUserIdOrderByCreatedAtDesc(Long userId);
+    Optional<Invoice> findByBookingId(Long bookingId);
 
     List<Invoice> findByStatusOrderByCreatedAtDesc(String status);
 
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"booking", "user", "items"})
     @Query("SELECT i FROM Invoice i ORDER BY i.createdAt DESC")
     List<Invoice> findAllLatest();
+
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"booking", "user", "items"})
+    List<Invoice> findByUserIdOrderByCreatedAtDesc(Long userId);
 
     @Query("SELECT COUNT(i) FROM Invoice i WHERE i.status = :status")
     long countByStatus(String status);

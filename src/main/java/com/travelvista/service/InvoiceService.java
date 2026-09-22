@@ -262,6 +262,11 @@ public class InvoiceService {
         return invoiceRepo.findById(id);
     }
 
+    @Transactional(readOnly = true)
+    public Optional<Invoice> getDetailedById(Long id) {
+        return invoiceRepo.findDetailedById(id);
+    }
+
     public List<Invoice> getAll() {
         return invoiceRepo.findAllLatest();
     }

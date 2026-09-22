@@ -1,5 +1,6 @@
 package com.travelvista.controller;
 
+import com.travelvista.dto.InvoiceResponse;
 import com.travelvista.model.Invoice;
 import com.travelvista.model.InvoiceItem;
 import com.travelvista.model.User;
@@ -63,8 +64,8 @@ public class InvoiceController {
             List<InvoiceItem> items = parseItems(body.get("items"));
             String createdByName = Optional.ofNullable(currentUser(auth)).map(User::getName).orElse("Admin");
             String createdByEmail = Optional.ofNullable(currentUser(auth)).map(User::getEmail).orElse("admin@travelvista.com");
-            return ResponseEntity.ok(invoiceService.createInvoice(invoice, items, userId,
-                    (String) body.get("customerGstin"), (String) body.get("customerState"), createdByName, createdByEmail));
+            return ResponseEntity.ok(InvoiceResponse.from(invoiceService.createInvoice(invoice, items, userId,
+                    (String) body.get("customerGstin"), (String) body.get("customerState"), createdByName, createdByEmail)));
         } catch (Exception e) { return bad(e.getMessage()); }
     }
 
@@ -80,8 +81,8 @@ public class InvoiceController {
             updates.setPackageTitle((String) body.get("packageTitle"));
             updates.setNotes((String) body.get("notes"));
             setDates(updates, body);
-            return ResponseEntity.ok(invoiceService.updateInvoice(id, updates, parseItems(body.get("items")),
-                    longValue(body.get("userId")), (String) body.get("customerGstin"), (String) body.get("customerState")));
+            return ResponseEntity.ok(InvoiceResponse.from(invoiceService.updateInvoice(id, updates, parseItems(body.get("items")),
+                    longValue(body.get("userId")), (String) body.get("customerGstin"), (String) body.get("customerState"))));
         } catch (Exception e) { return bad(e.getMessage()); }
     }
 
@@ -100,7 +101,7 @@ public class InvoiceController {
         try {
             String gstin = body == null ? null : body.get("customerGstin");
             String state = body == null ? null : body.get("customerState");
-            return ResponseEntity.ok(invoiceService.generateFromBooking(bookingId, gstin, state));
+            return ResponseEntity.ok(InvoiceResponse.from(invoiceService.generateFromBooking(bookingId, gstin, state)));
         } catch (RuntimeException e) { return bad(e.getMessage()); }
     }
 
@@ -109,9 +110,9 @@ public class InvoiceController {
         if (!staff(auth)) return forbidden();
         try {
             Map<String, Object> request = body == null ? Map.of() : body;
-            return ResponseEntity.ok(invoiceService.sendInvoice(id, String.valueOf(request.getOrDefault("sendVia", "email")),
+            return ResponseEntity.ok(InvoiceResponse.from(invoiceService.sendInvoice(id, String.valueOf(request.getOrDefault("sendVia", "email")),
                     (String) request.get("recipientEmail"), (String) request.get("recipientPhone"),
-                    Boolean.TRUE.equals(request.get("sendAdminCopy"))));
+                    Boolean.TRUE.equals(request.get("sendAdminCopy")))));
         } catch (Exception e) { return e instanceof AuthFailure failure
                 ? ResponseEntity.status(failure.getStatus()).body(Map.of("error", failure.getMessage()))
                 : bad(e.getMessage()); }
@@ -120,14 +121,14 @@ public class InvoiceController {
     @GetMapping
     public ResponseEntity<?> getAllInvoices(Authentication auth) {
         if (!staff(auth)) return forbidden();
-        return ResponseEntity.ok(invoiceService.getAll());
+        return ResponseEntity.ok(invoiceService.getAll().stream().map(InvoiceResponse::from).toList());
     }
 
     @GetMapping("/my")
     public ResponseEntity<?> getMyInvoices(Authentication auth) {
         User user = currentUser(auth);
         if (user == null || user.getRole() == null || !"customer".equals(user.getRole().getName())) return forbidden();
-        return ResponseEntity.ok(invoiceService.getByUser(user.getId()));
+        return ResponseEntity.ok(invoiceService.getByUser(user.getId()).stream().map(InvoiceResponse::from).toList());
     }
 
     @GetMapping("/users")
@@ -151,7 +152,7 @@ public class InvoiceController {
     @GetMapping("/{id}/pdf")
     public ResponseEntity<?> downloadPdf(@PathVariable Long id, Authentication auth) {
         try {
-            Invoice invoice = invoiceService.getById(id).orElse(null);
+            Invoice invoice = invoiceService.getDetailedById(id).orElse(null);
             if (invoice == null) return ResponseEntity.notFound().build();
             User user = currentUser(auth);
             boolean admin = staff(auth);
@@ -166,17 +167,17 @@ public class InvoiceController {
 
     @GetMapping("/{id}")
     public ResponseEntity<?> getInvoice(@PathVariable Long id, Authentication auth) {
-        Invoice invoice = invoiceService.getById(id).orElse(null);
+        Invoice invoice = invoiceService.getDetailedById(id).orElse(null);
         if (invoice == null) return ResponseEntity.notFound().build();
         User user = currentUser(auth);
         if (!staff(auth) && (user == null || invoice.getUser() == null || !invoice.getUser().getId().equals(user.getId()))) return forbidden();
-        return ResponseEntity.ok(invoice);
+        return ResponseEntity.ok(InvoiceResponse.from(invoice));
     }
 
     @PutMapping("/{id}/status")
     public ResponseEntity<?> updateStatus(@PathVariable Long id, @RequestBody Map<String, String> body, Authentication auth) {
         if (!staff(auth)) return forbidden();
-        try { return ResponseEntity.ok(invoiceService.updateStatus(id, body.get("status"), body.get("paymentMode"), body.get("paymentReference"))); }
+        try { return ResponseEntity.ok(InvoiceResponse.from(invoiceService.updateStatus(id, body.get("status"), body.get("paymentMode"), body.get("paymentReference")))); }
         catch (RuntimeException e) { return bad(e.getMessage()); }
     }
 
