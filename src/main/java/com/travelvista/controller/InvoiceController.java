@@ -4,8 +4,10 @@ import com.travelvista.model.Invoice;
 import com.travelvista.model.InvoiceItem;
 import com.travelvista.model.User;
 import com.travelvista.repository.UserRepository;
+import com.travelvista.service.InvoicePdfService;
+import com.travelvista.service.AuthFailure;
 import com.travelvista.service.InvoiceService;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -15,31 +17,40 @@ import java.util.*;
 @RestController
 @RequestMapping("/api/invoices")
 public class InvoiceController {
-
     private final InvoiceService invoiceService;
+    private final InvoicePdfService pdfService;
     private final UserRepository userRepository;
 
-    public InvoiceController(InvoiceService invoiceService, UserRepository userRepository) {
+    public InvoiceController(InvoiceService invoiceService, InvoicePdfService pdfService, UserRepository userRepository) {
         this.invoiceService = invoiceService;
+        this.pdfService = pdfService;
         this.userRepository = userRepository;
     }
 
-    private User getAdmin(Authentication auth) {
-        if (auth == null || auth.getPrincipal() == null) return null;
-        Object principal = auth.getPrincipal();
-        if (principal instanceof User u) return u;
-        if (auth.getName() != null) return userRepository.findByEmail(auth.getName()).orElse(null);
-        return null;
+    private User currentUser(Authentication auth) {
+        if (auth == null) return null;
+        if (auth.getPrincipal() instanceof User user) return user;
+        return auth.getName() == null ? null : userRepository.findByEmail(auth.getName()).orElse(null);
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 1. CREATE INVOICE (manual)
-    // ════════════════════════════════════════════════════════════════
+    private boolean staff(Authentication auth) {
+        User user = currentUser(auth);
+        if (user == null || user.getRole() == null) return false;
+        return Set.of("admin", "super_admin", "content_manager", "editor").contains(user.getRole().getName());
+    }
+
+    private ResponseEntity<Map<String, String>> forbidden() {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "You do not have permission to access this invoice"));
+    }
+
+    private ResponseEntity<Map<String, String>> bad(String message) {
+        return ResponseEntity.badRequest().body(Map.of("error", message == null ? "Invoice request failed" : message));
+    }
+
     @PostMapping
     public ResponseEntity<?> createInvoice(@RequestBody Map<String, Object> body, Authentication auth) {
+        if (!staff(auth)) return forbidden();
         try {
-            User admin = getAdmin(auth);
-
             Invoice invoice = new Invoice();
             invoice.setCustomerName((String) body.get("customerName"));
             invoice.setCustomerEmail((String) body.get("customerEmail"));
@@ -47,55 +58,19 @@ public class InvoiceController {
             invoice.setCustomerAddress((String) body.get("customerAddress"));
             invoice.setPackageTitle((String) body.get("packageTitle"));
             invoice.setNotes((String) body.get("notes"));
-
-            if (body.get("travelDate") != null) {
-                invoice.setTravelDate(LocalDate.parse((String) body.get("travelDate")));
-            }
-            if (body.get("endDate") != null) {
-                invoice.setEndDate(LocalDate.parse((String) body.get("endDate")));
-            }
-            if (body.get("travelers") != null) {
-                invoice.setTravelers((Integer) body.get("travelers"));
-            }
-            if (body.get("dueDate") != null) {
-                invoice.setDueDate(LocalDate.parse((String) body.get("dueDate")));
-            }
-
-            Long userId = body.get("userId") != null ? Long.valueOf(body.get("userId").toString()) : null;
-            String customerGstin = (String) body.get("customerGstin");
-            String customerState = (String) body.get("customerState");
-
-            // Parse items
-            List<InvoiceItem> items = new ArrayList<>();
-            List<Map<String, Object>> itemList = (List<Map<String, Object>>) body.get("items");
-            if (itemList != null) {
-                for (Map<String, Object> itemData : itemList) {
-                    InvoiceItem item = new InvoiceItem();
-                    item.setDescription((String) itemData.get("description"));
-                    item.setHsnCode(itemData.get("hsnCode") != null ? (String) itemData.get("hsnCode") : "9954");
-                    item.setQuantity(itemData.get("quantity") != null ? Integer.valueOf(itemData.get("quantity").toString()) : 1);
-                    item.setUnit(itemData.get("unit") != null ? (String) itemData.get("unit") : "NOS");
-                    item.setRate(itemData.get("rate") != null ? new java.math.BigDecimal(itemData.get("rate").toString()) : java.math.BigDecimal.ZERO);
-                    item.setDiscountPercent(itemData.get("discountPercent") != null ? new java.math.BigDecimal(itemData.get("discountPercent").toString()) : java.math.BigDecimal.ZERO);
-                    items.add(item);
-                }
-            }
-
-            String createdByName = admin != null ? admin.getName() : "Admin";
-            String createdByEmail = admin != null ? admin.getEmail() : "admin@travelvista.com";
-
-            Invoice saved = invoiceService.createInvoice(invoice, items, userId, customerGstin, customerState, createdByName, createdByEmail);
-            return ResponseEntity.ok(saved);
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
+            setDates(invoice, body);
+            Long userId = longValue(body.get("userId"));
+            List<InvoiceItem> items = parseItems(body.get("items"));
+            String createdByName = Optional.ofNullable(currentUser(auth)).map(User::getName).orElse("Admin");
+            String createdByEmail = Optional.ofNullable(currentUser(auth)).map(User::getEmail).orElse("admin@travelvista.com");
+            return ResponseEntity.ok(invoiceService.createInvoice(invoice, items, userId,
+                    (String) body.get("customerGstin"), (String) body.get("customerState"), createdByName, createdByEmail));
+        } catch (Exception e) { return bad(e.getMessage()); }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 2. UPDATE INVOICE
-    // ════════════════════════════════════════════════════════════════
     @PutMapping("/{id}")
-    public ResponseEntity<?> updateInvoice(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+    public ResponseEntity<?> updateInvoice(@PathVariable Long id, @RequestBody Map<String, Object> body, Authentication auth) {
+        if (!staff(auth)) return forbidden();
         try {
             Invoice updates = new Invoice();
             updates.setCustomerName((String) body.get("customerName"));
@@ -104,155 +79,131 @@ public class InvoiceController {
             updates.setCustomerAddress((String) body.get("customerAddress"));
             updates.setPackageTitle((String) body.get("packageTitle"));
             updates.setNotes((String) body.get("notes"));
-
-            if (body.get("travelDate") != null) updates.setTravelDate(LocalDate.parse((String) body.get("travelDate")));
-            if (body.get("endDate") != null) updates.setEndDate(LocalDate.parse((String) body.get("endDate")));
-            if (body.get("travelers") != null) updates.setTravelers((Integer) body.get("travelers"));
-            if (body.get("dueDate") != null) updates.setDueDate(LocalDate.parse((String) body.get("dueDate")));
-
-            Long userId = body.get("userId") != null ? Long.valueOf(body.get("userId").toString()) : null;
-            String customerGstin = (String) body.get("customerGstin");
-            String customerState = (String) body.get("customerState");
-
-            List<InvoiceItem> items = new ArrayList<>();
-            List<Map<String, Object>> itemList = (List<Map<String, Object>>) body.get("items");
-            if (itemList != null) {
-                for (Map<String, Object> itemData : itemList) {
-                    InvoiceItem item = new InvoiceItem();
-                    item.setDescription((String) itemData.get("description"));
-                    item.setHsnCode(itemData.get("hsnCode") != null ? (String) itemData.get("hsnCode") : "9954");
-                    item.setQuantity(itemData.get("quantity") != null ? Integer.valueOf(itemData.get("quantity").toString()) : 1);
-                    item.setUnit(itemData.get("unit") != null ? (String) itemData.get("unit") : "NOS");
-                    item.setRate(itemData.get("rate") != null ? new java.math.BigDecimal(itemData.get("rate").toString()) : java.math.BigDecimal.ZERO);
-                    item.setDiscountPercent(itemData.get("discountPercent") != null ? new java.math.BigDecimal(itemData.get("discountPercent").toString()) : java.math.BigDecimal.ZERO);
-                    items.add(item);
-                }
-            }
-
-            Invoice saved = invoiceService.updateInvoice(id, updates, items, userId, customerGstin, customerState);
-            return ResponseEntity.ok(saved);
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
+            setDates(updates, body);
+            return ResponseEntity.ok(invoiceService.updateInvoice(id, updates, parseItems(body.get("items")),
+                    longValue(body.get("userId")), (String) body.get("customerGstin"), (String) body.get("customerState")));
+        } catch (Exception e) { return bad(e.getMessage()); }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 3. DELETE INVOICE
-    // ════════════════════════════════════════════════════════════════
     @DeleteMapping("/{id}")
-    public ResponseEntity<?> deleteInvoice(@PathVariable Long id) {
-        try {
-            invoiceService.deleteInvoice(id);
-            return ResponseEntity.ok(Map.of("message", "Invoice deleted"));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
+    public ResponseEntity<?> deleteInvoice(@PathVariable Long id, Authentication auth) {
+        if (!staff(auth)) return forbidden();
+        try { invoiceService.deleteInvoice(id); return ResponseEntity.ok(Map.of("message", "Invoice deleted")); }
+        catch (RuntimeException e) { return bad(e.getMessage()); }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 4. AUTO-GENERATE FROM BOOKING
-    // ════════════════════════════════════════════════════════════════
     @PostMapping("/generate/{bookingId}")
-    public ResponseEntity<?> generateFromBooking(
-            @PathVariable Long bookingId,
-            @RequestBody(required = false) Map<String, String> body) {
+    public ResponseEntity<?> generateFromBooking(@PathVariable Long bookingId,
+                                                  @RequestBody(required = false) Map<String, String> body,
+                                                  Authentication auth) {
+        if (!staff(auth)) return forbidden();
         try {
-            String customerGstin = body != null ? body.get("customerGstin") : null;
-            String customerState = body != null ? body.get("customerState") : null;
-            Invoice invoice = invoiceService.generateFromBooking(bookingId, customerGstin, customerState);
-            return ResponseEntity.ok(invoice);
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
+            String gstin = body == null ? null : body.get("customerGstin");
+            String state = body == null ? null : body.get("customerState");
+            return ResponseEntity.ok(invoiceService.generateFromBooking(bookingId, gstin, state));
+        } catch (RuntimeException e) { return bad(e.getMessage()); }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 5. SEND INVOICE
-    // ════════════════════════════════════════════════════════════════
     @PostMapping("/{id}/send")
-    public ResponseEntity<?> sendInvoice(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+    public ResponseEntity<?> sendInvoice(@PathVariable Long id, @RequestBody(required = false) Map<String, Object> body, Authentication auth) {
+        if (!staff(auth)) return forbidden();
         try {
-            String sendVia = (String) body.getOrDefault("sendVia", "email");
-            String recipientEmail = (String) body.get("recipientEmail");
-            String recipientPhone = (String) body.get("recipientPhone");
-            boolean sendAdminCopy = Boolean.TRUE.equals(body.get("sendAdminCopy"));
-
-            Invoice invoice = invoiceService.sendInvoice(id, sendVia, recipientEmail, recipientPhone, sendAdminCopy);
-            return ResponseEntity.ok(invoice);
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
+            Map<String, Object> request = body == null ? Map.of() : body;
+            return ResponseEntity.ok(invoiceService.sendInvoice(id, String.valueOf(request.getOrDefault("sendVia", "email")),
+                    (String) request.get("recipientEmail"), (String) request.get("recipientPhone"),
+                    Boolean.TRUE.equals(request.get("sendAdminCopy"))));
+        } catch (Exception e) { return e instanceof AuthFailure failure
+                ? ResponseEntity.status(failure.getStatus()).body(Map.of("error", failure.getMessage()))
+                : bad(e.getMessage()); }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 6. GET ALL INVOICES (admin)
-    // ════════════════════════════════════════════════════════════════
     @GetMapping
-    public ResponseEntity<?> getAllInvoices() {
+    public ResponseEntity<?> getAllInvoices(Authentication auth) {
+        if (!staff(auth)) return forbidden();
         return ResponseEntity.ok(invoiceService.getAll());
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 7. GET INVOICE BY ID
-    // ════════════════════════════════════════════════════════════════
-    @GetMapping("/{id}")
-    public ResponseEntity<?> getInvoice(@PathVariable Long id) {
-        return invoiceService.getById(id)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
-    }
-
-    // ════════════════════════════════════════════════════════════════
-    // 8. GET MY INVOICES (customer)
-    // ════════════════════════════════════════════════════════════════
     @GetMapping("/my")
     public ResponseEntity<?> getMyInvoices(Authentication auth) {
-        User user = getAdmin(auth);
-        if (user == null) return ResponseEntity.status(401).build();
+        User user = currentUser(auth);
+        if (user == null || user.getRole() == null || !"customer".equals(user.getRole().getName())) return forbidden();
         return ResponseEntity.ok(invoiceService.getByUser(user.getId()));
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 9. GET USERS LIST (for dropdown)
-    // ════════════════════════════════════════════════════════════════
     @GetMapping("/users")
-    public ResponseEntity<?> getUsers() {
-        var users = userRepository.findAll();
-        var list = users.stream().map(u -> Map.of(
-                "id", u.getId(),
-                "name", u.getName() != null ? u.getName() : "",
-                "email", u.getEmail() != null ? u.getEmail() : "",
-                "phone", u.getPhone() != null ? u.getPhone() : ""
-        )).toList();
-        return ResponseEntity.ok(list);
+    public ResponseEntity<?> getUsers(Authentication auth) {
+        if (!staff(auth)) return forbidden();
+        return ResponseEntity.ok(userRepository.findAll().stream().map(u -> Map.of(
+                "id", u.getId(), "name", Optional.ofNullable(u.getName()).orElse(""),
+                "email", Optional.ofNullable(u.getEmail()).orElse(""), "phone", Optional.ofNullable(u.getPhone()).orElse("")
+        )).toList());
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 10. UPDATE STATUS
-    // ════════════════════════════════════════════════════════════════
-    @PutMapping("/{id}/status")
-    public ResponseEntity<?> updateStatus(@PathVariable Long id, @RequestBody Map<String, String> body) {
-        try {
-            Invoice invoice = invoiceService.updateStatus(id, body.get("status"), body.get("paymentMode"), body.get("paymentReference"));
-            return ResponseEntity.ok(invoice);
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
-    }
-
-    // ════════════════════════════════════════════════════════════════
-    // 11. DASHBOARD STATS
-    // ════════════════════════════════════════════════════════════════
     @GetMapping("/stats")
-    public ResponseEntity<?> getStats() {
-        return ResponseEntity.ok(Map.of(
-                "totalInvoices", invoiceService.totalInvoices(),
-                "paidCount", invoiceService.paidCount(),
-                "pendingCount", invoiceService.pendingCount(),
-                "totalRevenue", invoiceService.totalRevenue(),
-                "totalTaxCollected", invoiceService.totalTaxCollected(),
-                "totalIgst", invoiceService.totalIgst(),
-                "totalCgstSgst", invoiceService.totalCgstSgst()
-        ));
+    public ResponseEntity<?> getStats(Authentication auth) {
+        if (!staff(auth)) return forbidden();
+        return ResponseEntity.ok(Map.of("totalInvoices", invoiceService.totalInvoices(), "paidCount", invoiceService.paidCount(),
+                "pendingCount", invoiceService.pendingCount(), "totalRevenue", invoiceService.totalRevenue(),
+                "totalTaxCollected", invoiceService.totalTaxCollected(), "totalIgst", invoiceService.totalIgst(),
+                "totalCgstSgst", invoiceService.totalCgstSgst()));
     }
+
+    @GetMapping("/{id}/pdf")
+    public ResponseEntity<?> downloadPdf(@PathVariable Long id, Authentication auth) {
+        try {
+            Invoice invoice = invoiceService.getById(id).orElse(null);
+            if (invoice == null) return ResponseEntity.notFound().build();
+            User user = currentUser(auth);
+            boolean admin = staff(auth);
+            if (!admin && (user == null || invoice.getUser() == null || !invoice.getUser().getId().equals(user.getId()))) return forbidden();
+            byte[] pdf = pdfService.generate(invoice);
+            String filename = (invoice.getInvoiceNumber() == null ? "travelvista-invoice" : invoice.getInvoiceNumber()).replaceAll("[^A-Za-z0-9._-]", "-") + ".pdf";
+            return ResponseEntity.ok().contentType(MediaType.APPLICATION_PDF)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(filename).build().toString())
+                    .body(pdf);
+        } catch (RuntimeException e) { return bad(e.getMessage()); }
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<?> getInvoice(@PathVariable Long id, Authentication auth) {
+        Invoice invoice = invoiceService.getById(id).orElse(null);
+        if (invoice == null) return ResponseEntity.notFound().build();
+        User user = currentUser(auth);
+        if (!staff(auth) && (user == null || invoice.getUser() == null || !invoice.getUser().getId().equals(user.getId()))) return forbidden();
+        return ResponseEntity.ok(invoice);
+    }
+
+    @PutMapping("/{id}/status")
+    public ResponseEntity<?> updateStatus(@PathVariable Long id, @RequestBody Map<String, String> body, Authentication auth) {
+        if (!staff(auth)) return forbidden();
+        try { return ResponseEntity.ok(invoiceService.updateStatus(id, body.get("status"), body.get("paymentMode"), body.get("paymentReference"))); }
+        catch (RuntimeException e) { return bad(e.getMessage()); }
+    }
+
+    private static void setDates(Invoice invoice, Map<String, Object> body) {
+        if (body.get("travelDate") != null) invoice.setTravelDate(LocalDate.parse(String.valueOf(body.get("travelDate"))));
+        if (body.get("endDate") != null) invoice.setEndDate(LocalDate.parse(String.valueOf(body.get("endDate"))));
+        if (body.get("dueDate") != null) invoice.setDueDate(LocalDate.parse(String.valueOf(body.get("dueDate"))));
+        if (body.get("travelers") != null) invoice.setTravelers(Integer.valueOf(body.get("travelers").toString()));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<InvoiceItem> parseItems(Object raw) {
+        List<InvoiceItem> items = new ArrayList<>();
+        if (!(raw instanceof List<?> list)) return items;
+        for (Object value : list) {
+            if (!(value instanceof Map<?, ?> source)) continue;
+            InvoiceItem item = new InvoiceItem();
+            item.setDescription((String) source.get("description"));
+            item.setHsnCode(source.get("hsnCode") == null ? "9954" : String.valueOf(source.get("hsnCode")));
+            item.setQuantity(source.get("quantity") == null ? 1 : Integer.valueOf(source.get("quantity").toString()));
+            item.setUnit(source.get("unit") == null ? "NOS" : String.valueOf(source.get("unit")));
+            item.setRate(source.get("rate") == null ? java.math.BigDecimal.ZERO : new java.math.BigDecimal(source.get("rate").toString()));
+            item.setDiscountPercent(source.get("discountPercent") == null ? java.math.BigDecimal.ZERO : new java.math.BigDecimal(source.get("discountPercent").toString()));
+            items.add(item);
+        }
+        return items;
+    }
+
+    private static Long longValue(Object value) { return value == null ? null : Long.valueOf(value.toString()); }
 }

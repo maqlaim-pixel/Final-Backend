@@ -21,6 +21,8 @@ public class InvoiceService {
     private final BookingRepository bookingRepo;
     private final UserRepository userRepo;
     private final SiteSettingRepository settingsRepo;
+    private final EmailOtpService emailService;
+    private final InvoicePdfService invoicePdfService;
 
     private static final BigDecimal GST_RATE = new BigDecimal("18.00");
 
@@ -28,12 +30,16 @@ public class InvoiceService {
                           InvoiceItemRepository invoiceItemRepo,
                           BookingRepository bookingRepo,
                           UserRepository userRepo,
-                          SiteSettingRepository settingsRepo) {
+                          SiteSettingRepository settingsRepo,
+                          EmailOtpService emailService,
+                          InvoicePdfService invoicePdfService) {
         this.invoiceRepo = invoiceRepo;
         this.invoiceItemRepo = invoiceItemRepo;
         this.bookingRepo = bookingRepo;
         this.userRepo = userRepo;
         this.settingsRepo = settingsRepo;
+        this.emailService = emailService;
+        this.invoicePdfService = invoicePdfService;
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -43,6 +49,9 @@ public class InvoiceService {
     public Invoice createInvoice(Invoice invoice, List<InvoiceItem> items,
                                  Long userId, String customerGstin, String customerState,
                                  String createdByName, String createdByEmail) {
+        if (userId == null) throw new IllegalArgumentException("Customer is required");
+        validateItems(items);
+
         // Set user
         if (userId != null) {
             User user = userRepo.findById(userId)
@@ -128,6 +137,7 @@ public class InvoiceService {
         // Recalculate items
         boolean isIntraState = isIntraState(invoice.getCompanyState(), customerState);
         if (items != null) {
+            validateItems(items);
             // Remove old items
             invoice.getItems().clear();
             for (int i = 0; i < items.size(); i++) {
@@ -206,34 +216,27 @@ public class InvoiceService {
                                String recipientPhone, boolean sendAdminCopy) {
         Invoice invoice = invoiceRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("Invoice not found"));
+        if (!"email".equalsIgnoreCase(sendVia)) {
+            throw new AuthFailure(400, "Only email invoice delivery is currently supported");
+        }
+        String destination = invoice.getCustomerEmail();
+        if (destination == null || destination.isBlank()) throw new AuthFailure(400, "Invoice recipient email is required");
+        if (recipientEmail != null && !recipientEmail.isBlank() && !destination.equalsIgnoreCase(recipientEmail.trim())) {
+            throw new AuthFailure(400, "Recipient email must match the invoice customer email");
+        }
 
-        invoice.setSentVia(sendVia);
-        invoice.setSentToEmail(recipientEmail);
-        invoice.setSentToPhone(recipientPhone);
+        byte[] pdf = invoicePdfService.generate(invoice);
+        String messageId = emailService.sendInvoiceEmail(destination, invoice, pdf);
+
+        // Persist sent metadata only after Resend accepts the request.
+        invoice.setSentVia("email");
+        invoice.setSentToEmail(destination);
         invoice.setSentAt(LocalDateTime.now());
         invoice.setAdminCopySent(sendAdminCopy);
         invoice.setAdminEmail(getSetting("admin_email", "admin@travelvista.com"));
-        invoice.setAdminPhone(getSetting("admin_phone", "+91 98765 43210"));
-
-        // Simulate send (in production, integrate with email/WhatsApp API)
-        if ("email".equalsIgnoreCase(sendVia) || "both".equalsIgnoreCase(sendVia)) {
-            if (recipientEmail != null && !recipientEmail.isEmpty()) {
-                invoice.setEmailStatus("sent");
-                invoice.setEmailSentAt(LocalDateTime.now());
-            }
-        }
-        if ("whatsapp".equalsIgnoreCase(sendVia) || "both".equalsIgnoreCase(sendVia)) {
-            if (recipientPhone != null && !recipientPhone.isEmpty()) {
-                invoice.setWhatsappStatus("sent");
-                invoice.setWhatsappSentAt(LocalDateTime.now());
-            }
-        }
-
-        // Update status to sent if it was draft
-        if ("draft".equals(invoice.getStatus())) {
-            invoice.setStatus("sent");
-        }
-
+        invoice.setEmailStatus("accepted");
+        invoice.setEmailSentAt(LocalDateTime.now());
+        if ("draft".equals(invoice.getStatus())) invoice.setStatus("sent");
         invoice.setUpdatedAt(LocalDateTime.now());
         return invoiceRepo.save(invoice);
     }
@@ -321,6 +324,18 @@ public class InvoiceService {
             invoice.setIgstRate(GST_RATE);
             invoice.setCgstRate(BigDecimal.ZERO);
             invoice.setSgstRate(BigDecimal.ZERO);
+        }
+    }
+
+    private void validateItems(List<InvoiceItem> items) {
+        if (items == null || items.isEmpty()) throw new IllegalArgumentException("At least one invoice item is required");
+        for (InvoiceItem item : items) {
+            if (item.getDescription() == null || item.getDescription().isBlank()) throw new IllegalArgumentException("Invoice item description is required");
+            if (item.getQuantity() == null || item.getQuantity() <= 0) throw new IllegalArgumentException("Invoice item quantity must be positive");
+            if (item.getRate() == null || item.getRate().compareTo(BigDecimal.ZERO) < 0) throw new IllegalArgumentException("Invoice item rate cannot be negative");
+            if (item.getDiscountPercent() == null || item.getDiscountPercent().compareTo(BigDecimal.ZERO) < 0 || item.getDiscountPercent().compareTo(new BigDecimal("100")) > 0) {
+                throw new IllegalArgumentException("Invoice item discount must be between 0 and 100 percent");
+            }
         }
     }
 

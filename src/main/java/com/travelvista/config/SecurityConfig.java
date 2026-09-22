@@ -49,6 +49,9 @@ public class SecurityConfig {
                     "/api/auth/login", "/api/auth/login/verify", "/api/auth/login/otp/send", "/api/auth/login/otp/verify",
                     "/api/auth/login/otp/resend", "/api/auth/forgot-password", "/api/auth/forgot-password/verify", "/api/auth/reset-password").permitAll()
                 .requestMatchers("/api/admin/**").hasAnyRole("admin", "super_admin", "content_manager", "editor")
+                .requestMatchers(HttpMethod.GET, "/api/invoices/my").hasRole("customer")
+                .requestMatchers(HttpMethod.GET, "/api/invoices/*", "/api/invoices/*/pdf").hasAnyRole("customer", "admin", "super_admin", "content_manager", "editor")
+                .requestMatchers("/api/invoices/**").hasAnyRole("admin", "super_admin", "content_manager", "editor")
                 .requestMatchers("/api/auth/me").hasRole("customer")
                 .requestMatchers(AntPathRequestMatcher.antMatcher(HttpMethod.GET, "/api/packages/**")).permitAll()
                 .requestMatchers(AntPathRequestMatcher.antMatcher(HttpMethod.GET, "/api/destinations/**")).permitAll()
