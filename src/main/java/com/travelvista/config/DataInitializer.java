@@ -17,8 +17,12 @@ import java.util.Optional;
 
 @Component
 public class DataInitializer implements CommandLineRunner {
-    @org.springframework.beans.factory.annotation.Value("${BOOTSTRAP_ADMIN_PASSWORD:}")
-    private String bootstrapAdminPassword;
+    @org.springframework.beans.factory.annotation.Value("${BOOTSTRAP_SUPER_ADMIN_EMAIL:}")
+    private String bootstrapSuperAdminEmail;
+    @org.springframework.beans.factory.annotation.Value("${BOOTSTRAP_SUPER_ADMIN_PASSWORD:}")
+    private String bootstrapSuperAdminPassword;
+    @org.springframework.beans.factory.annotation.Value("${BOOTSTRAP_EDITOR_EMAIL:}")
+    private String bootstrapEditorEmail;
     @org.springframework.beans.factory.annotation.Value("${BOOTSTRAP_EDITOR_PASSWORD:}")
     private String bootstrapEditorPassword;
 
@@ -66,20 +70,12 @@ public class DataInitializer implements CommandLineRunner {
         Role sales = getOrCreateRole("sales", "Leads and enquiries management");
         Role customer = getOrCreateRole("customer", "Regular website user");
 
-        // ── Admin User ────────────────────────────────────────────────
-        if (!userRepository.existsByEmail("admin@travelvista.com") && !bootstrapAdminPassword.isBlank()) {
-            User admin = new User("Admin", "admin@travelvista.com",
-                    passwordEncoder.encode(bootstrapAdminPassword), superAdmin);
-            userRepository.save(admin);
-            System.out.println("  Admin user created from environment configuration");
-        }
-
-        if (!userRepository.existsByEmail("editor@travelvista.com") && !bootstrapEditorPassword.isBlank()) {
-            User editorUser = new User("Editor", "editor@travelvista.com",
-                    passwordEncoder.encode(bootstrapEditorPassword), editor);
-            userRepository.save(editorUser);
-            System.out.println("  Editor user created from environment configuration");
-        }
+        // ── Optional environment-configured staff accounts ────────────
+        // Credentials are never hardcoded or printed. Existing accounts are left untouched.
+        seedStaffUser(bootstrapSuperAdminEmail, bootstrapSuperAdminPassword,
+                "TravelVista Super Admin", superAdmin);
+        seedStaffUser(bootstrapEditorEmail, bootstrapEditorPassword,
+                "TravelVista Editor", editor);
 
         // ── Packages ──────────────────────────────────────────────────
         if (packageRepository.countAll() == 0) {
@@ -136,13 +132,27 @@ public class DataInitializer implements CommandLineRunner {
         }
 
         System.out.println("🎉 Seed data ready!\n");
-        System.out.println("══════════════════════════════════════════════════════");
-        System.out.println("  ADMIN LOGIN");
-        System.out.println("══════════════════════════════════════════════════════");
-        System.out.println("  URL:      http://localhost:8080/api/admin/login");
-        System.out.println("  Email:    admin@travelvista.com");
-        System.out.println("  Password: admin123");
-        System.out.println("══════════════════════════════════════════════════════\n");
+    }
+
+    private void seedStaffUser(String configuredEmail, String configuredPassword,
+                               String displayName, Role role) {
+        if (configuredEmail == null || configuredEmail.isBlank()
+                || configuredPassword == null || configuredPassword.isBlank()) {
+            return;
+        }
+
+        String email = configuredEmail.trim().toLowerCase(java.util.Locale.ROOT);
+        if (userRepository.findByEmailIgnoreCase(email).isPresent()) {
+            return;
+        }
+
+        User user = new User(displayName, email,
+                passwordEncoder.encode(configuredPassword), role);
+        user.setIsActive(true);
+        user.setEmailVerified(true);
+        user.setPhoneVerified(false);
+        userRepository.save(user);
+        System.out.println("  Staff account created from environment configuration: " + role.getName());
     }
 
     private Role getOrCreateRole(String name, String desc) {
