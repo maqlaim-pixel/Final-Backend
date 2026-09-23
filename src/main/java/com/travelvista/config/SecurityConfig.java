@@ -315,12 +315,14 @@ public class SecurityConfig {
                 "http://localhost:5173",
                 "https://final-frontend-jet-zeta.vercel.app",
                 "https://final-frontend-git-main-dhavalmaqlaim-5177.vercel.app",
-                "https://final-frontend-dhavalmaqlaim-5177.vercel.app"
+                "https://final-frontend-dhavalmaqlaim-5177.vercel.app",
+                "https://finalll-frontend.vercel.app"
         ));
 
-        // Restrict preview deployments to this Vercel project and team.
+        // Restrict preview deployments to these Vercel projects and team.
         config.setAllowedOriginPatterns(List.of(
-                "https://final-frontend-*-dhavalmaqlaim-5177.vercel.app"
+                "https://final-frontend-*-dhavalmaqlaim-5177.vercel.app",
+                "https://finalll-frontend-*.vercel.app"
         ));
 
         config.setAllowedMethods(List.of(

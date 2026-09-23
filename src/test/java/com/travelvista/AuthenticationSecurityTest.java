@@ -105,4 +105,34 @@ class AuthenticationSecurityTest {
         assertEquals(origin, response.getHeader("Access-Control-Allow-Origin"));
         assertEquals("true", response.getHeader("Access-Control-Allow-Credentials"));
     }
+
+    @Test void newProductionFrontendCanPreflightRegistrationRequest() throws Exception {
+        String origin = "https://finalll-frontend.vercel.app";
+        var response = mvc.perform(options("/api/auth/register")
+                        .header("Origin", origin)
+                        .header("Access-Control-Request-Method", "POST")
+                        .header("Access-Control-Request-Headers", "authorization,content-type"))
+                .andReturn()
+                .getResponse();
+
+        assertEquals(200, response.getStatus());
+        assertEquals(origin, response.getHeader("Access-Control-Allow-Origin"));
+        assertEquals("true", response.getHeader("Access-Control-Allow-Credentials"));
+        assertTrue(response.getHeader("Access-Control-Allow-Methods").contains("POST"));
+        assertNotNull(response.getHeader("Access-Control-Allow-Headers"));
+    }
+
+    @Test void newVercelPreviewOriginIsAllowedForPreflight() throws Exception {
+        String origin = "https://finalll-frontend-abc123-xyz.vercel.app";
+        var response = mvc.perform(options("/api/auth/register")
+                        .header("Origin", origin)
+                        .header("Access-Control-Request-Method", "POST")
+                        .header("Access-Control-Request-Headers", "content-type"))
+                .andReturn()
+                .getResponse();
+
+        assertEquals(200, response.getStatus());
+        assertEquals(origin, response.getHeader("Access-Control-Allow-Origin"));
+        assertEquals("true", response.getHeader("Access-Control-Allow-Credentials"));
+    }
 }
