@@ -35,9 +35,7 @@ public class InvoiceController {
     }
 
     private boolean staff(Authentication auth) {
-        User user = currentUser(auth);
-        if (user == null || user.getRole() == null) return false;
-        return Set.of("admin", "super_admin", "content_manager", "editor").contains(user.getRole().getName());
+        return com.travelvista.service.UserService.isStaff(currentUser(auth));
     }
 
     private ResponseEntity<Map<String, String>> forbidden() {

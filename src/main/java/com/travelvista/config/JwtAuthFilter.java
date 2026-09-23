@@ -2,6 +2,7 @@ package com.travelvista.config;
 
 import com.travelvista.model.User;
 import com.travelvista.repository.UserRepository;
+import com.travelvista.service.UserService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -40,14 +41,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     String role = jwtUtil.extractRole(token);
 
                     User user = userRepository.findByEmail(email).orElse(null);
-                    boolean adminRole = user != null && user.getRole() != null
-                            && ("admin".equals(user.getRole().getName())
-                            || "super_admin".equals(user.getRole().getName())
-                            || "content_manager".equals(user.getRole().getName())
-                            || "editor".equals(user.getRole().getName()));
-                    if (user != null && Boolean.TRUE.equals(user.getIsActive())
-                            && (adminRole || Boolean.TRUE.equals(user.getEmailVerified()))) {
-                        var authorities = List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().getName()));
+                    // Role names are normalized (case/whitespace) but the accepted role set is unchanged.
+                    String normalizedRole = UserService.normalizeRole(UserService.roleName(user));
+                    boolean hasRole = user != null && !normalizedRole.isBlank() && !"none".equals(normalizedRole);
+                    boolean staffRole = UserService.ADMIN_ROLE_NAMES.contains(normalizedRole);
+                    if (user != null && hasRole && Boolean.TRUE.equals(user.getIsActive())
+                            && (staffRole || Boolean.TRUE.equals(user.getEmailVerified()))) {
+                        var authorities = List.of(new SimpleGrantedAuthority("ROLE_" + normalizedRole));
                         var auth = new UsernamePasswordAuthenticationToken(
                                 user, null, authorities);
                         SecurityContextHolder.getContext().setAuthentication(auth);

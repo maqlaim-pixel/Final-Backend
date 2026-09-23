@@ -4,6 +4,8 @@ import com.travelvista.dto.LoginRequest;
 import com.travelvista.dto.LoginResponse;
 import com.travelvista.model.User;
 import com.travelvista.service.UserService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -13,6 +15,8 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/admin")
 public class AuthController {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
     private final UserService userService;
 
@@ -35,9 +39,12 @@ public class AuthController {
             return ResponseEntity.status(401).body(Map.of("error", "Invalid credentials"));
         }
 
-        String role = user.getRole() == null ? "" : user.getRole().getName();
-        if (!("admin".equals(role) || "super_admin".equals(role)
-                || "content_manager".equals(role) || "editor".equals(role))) {
+        String rawRole = UserService.roleName(user);
+        String role = UserService.normalizeRole(rawRole);
+        if (!UserService.ADMIN_ROLE_NAMES.contains(role)) {
+            // Temporary safe diagnostic: shows why a valid password was still rejected.
+            log.info("[ADMIN LOGIN] rejected role={} accepted={} email={}",
+                    rawRole, UserService.ADMIN_ROLE_NAMES, maskEmail(user.getEmail()));
             return ResponseEntity.status(403).body(Map.of("error", "Admin access required"));
         }
 

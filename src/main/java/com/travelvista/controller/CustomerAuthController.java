@@ -118,6 +118,12 @@ public class CustomerAuthController {
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest request) {
         User user = userService.lockByEmail(request.getEmail());
+        // Temporary safe diagnostics: reports state only, never passwords/hashes/tokens.
+        log.info("[CUSTOMER LOGIN] userFound={} role={} active={} verified={} passwordMatches={}",
+                user != null, UserService.roleName(user),
+                user != null && Boolean.TRUE.equals(user.getIsActive()),
+                user != null && Boolean.TRUE.equals(user.getEmailVerified()),
+                userService.matchesPassword(user, request.getPassword()));
         if (!UserService.isCustomer(user) || !userService.matchesPassword(user, request.getPassword()))
             throw new AuthFailure(401, "Invalid email or password");
         requireActive(user);

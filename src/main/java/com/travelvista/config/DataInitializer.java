@@ -71,7 +71,9 @@ public class DataInitializer implements CommandLineRunner {
         Role customer = getOrCreateRole("customer", "Regular website user");
 
         // ── Optional environment-configured staff accounts ────────────
-        // Credentials are never hardcoded or printed. Existing accounts are left untouched.
+        // Credentials are never hardcoded or printed. A configured account's ROLE and
+        // active/verified state are reconciled so an existing row can never silently keep
+        // a non-staff role; its password is never rewritten.
         seedStaffUser(bootstrapSuperAdminEmail, bootstrapSuperAdminPassword,
                 "TravelVista Super Admin", superAdmin);
         seedStaffUser(bootstrapEditorEmail, bootstrapEditorPassword,
@@ -142,7 +144,31 @@ public class DataInitializer implements CommandLineRunner {
         }
 
         String email = configuredEmail.trim().toLowerCase(java.util.Locale.ROOT);
-        if (userRepository.findByEmailIgnoreCase(email).isPresent()) {
+        Optional<User> existingAccount = userRepository.findByEmailIgnoreCase(email);
+
+        if (existingAccount.isPresent()) {
+            User existing = existingAccount.get();
+            String currentRole = existing.getRole() == null ? "none" : existing.getRole().getName();
+            boolean changed = false;
+
+            if (!role.getName().equalsIgnoreCase(currentRole)) {
+                existing.setRole(role);
+                changed = true;
+            }
+            if (!Boolean.TRUE.equals(existing.getIsActive())) {
+                existing.setIsActive(true);
+                changed = true;
+            }
+            if (!Boolean.TRUE.equals(existing.getEmailVerified())) {
+                existing.setEmailVerified(true);
+                changed = true;
+            }
+            if (changed) {
+                existing.setUpdatedAt(java.time.LocalDateTime.now());
+                userRepository.save(existing);
+                System.out.println("  Bootstrap staff account corrected to role " + role.getName()
+                        + " (previous role: " + currentRole + ")");
+            }
             return;
         }
 

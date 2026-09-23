@@ -7,11 +7,20 @@ import com.travelvista.model.Role;
 import com.travelvista.model.User;
 import com.travelvista.repository.RoleRepository;
 import com.travelvista.repository.UserRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.util.Set;
+
 @Service
 public class UserService {
+
+    private static final Logger log = LoggerFactory.getLogger(UserService.class);
+
+    /** Roles allowed into the staff/admin area. This set is the single source of truth. */
+    public static final Set<String> ADMIN_ROLE_NAMES = Set.of("admin", "super_admin", "content_manager", "editor");
 
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
@@ -31,16 +40,45 @@ public class UserService {
      */
     public User verifyCredentials(LoginRequest request) {
         if (request == null || request.getEmail() == null || request.getPassword() == null) {
+            log.info("[ADMIN LOGIN] userFound=false reason=missing-credentials");
             return null;
         }
         User user = findByEmailNormalized(request.getEmail());
-        if (user == null || !Boolean.TRUE.equals(user.getIsActive())) {
+        if (user == null) {
+            log.info("[ADMIN LOGIN] userFound=false email={}", maskEmail(request.getEmail()));
             return null;
         }
-        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
+        // Temporary safe diagnostics: state only — never passwords, hashes, OTPs or tokens.
+        boolean passwordMatches = user.getPasswordHash() != null
+                && passwordEncoder.matches(request.getPassword(), user.getPasswordHash());
+        log.info("[ADMIN LOGIN] userFound=true role={} active={} verified={} passwordMatches={} email={}",
+                roleName(user), Boolean.TRUE.equals(user.getIsActive()),
+                Boolean.TRUE.equals(user.getEmailVerified()), passwordMatches, maskEmail(user.getEmail()));
+        if (!Boolean.TRUE.equals(user.getIsActive()) || !passwordMatches) {
             return null;
         }
         return user;
+    }
+
+    /** Role name of a user, or "none" when the account has no role row attached. */
+    public static String roleName(User user) {
+        if (user == null || user.getRole() == null || user.getRole().getName() == null) return "none";
+        return user.getRole().getName();
+    }
+
+    /**
+     * Stored role names are compared case/whitespace-insensitively so that legacy data
+     * variance cannot block a legitimate role. The accepted role set is unchanged.
+     */
+    public static String normalizeRole(String role) {
+        return role == null ? "" : role.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static String maskEmail(String email) {
+        if (email == null) return "";
+        int at = email.indexOf('@');
+        if (at <= 1) return email;
+        return email.charAt(0) + "*****" + email.substring(at);
     }
 
     /** Verify only the password, allowing the customer controller to return a precise inactive-account error. */
@@ -85,7 +123,12 @@ public class UserService {
     }
 
     public static boolean isCustomer(User user) {
-        return user != null && user.getRole() != null && "customer".equals(user.getRole().getName());
+        return user != null && "customer".equals(normalizeRole(roleName(user)));
+    }
+
+    /** True when the account is attached to a staff/admin role. */
+    public static boolean isStaff(User user) {
+        return user != null && ADMIN_ROLE_NAMES.contains(normalizeRole(roleName(user)));
     }
 
     public static String normalizePhone(String raw) {
