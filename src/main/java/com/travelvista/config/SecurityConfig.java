@@ -310,11 +310,17 @@ public class SecurityConfig {
 
         CorsConfiguration config = new CorsConfiguration();
 
-        // Local frontend + deployed Vercel frontend
+        // Local frontend + deployed Vercel production frontends
         config.setAllowedOrigins(List.of(
                 "http://localhost:5173",
                 "https://final-frontend-jet-zeta.vercel.app",
-                "https://final-frontend-git-main-dhavalmaqlaim-5177.vercel.app"
+                "https://final-frontend-git-main-dhavalmaqlaim-5177.vercel.app",
+                "https://final-frontend-dhavalmaqlaim-5177.vercel.app"
+        ));
+
+        // Restrict preview deployments to this Vercel project and team.
+        config.setAllowedOriginPatterns(List.of(
+                "https://final-frontend-*-dhavalmaqlaim-5177.vercel.app"
         ));
 
         config.setAllowedMethods(List.of(
@@ -326,7 +332,12 @@ public class SecurityConfig {
                 "OPTIONS"
         ));
 
-        config.setAllowedHeaders(List.of("*"));
+        config.setAllowedHeaders(List.of(
+                "Accept",
+                "Authorization",
+                "Content-Type",
+                "X-Requested-With"
+        ));
 
         config.setExposedHeaders(List.of(
                 "Authorization",

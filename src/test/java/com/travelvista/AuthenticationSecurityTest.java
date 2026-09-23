@@ -75,4 +75,34 @@ class AuthenticationSecurityTest {
     @Test void currentDatabaseRoleOverridesOldJwtRole() throws Exception {
         assertEquals(403,getStatus("/api/admin/me",jwt.generateToken(user.getEmail(),"admin","Test")));
     }
+
+    @Test void productionFrontendCanPreflightCredentialedLoginRequest() throws Exception {
+        String origin = "https://final-frontend-dhavalmaqlaim-5177.vercel.app";
+        var response = mvc.perform(options("/api/auth/login")
+                        .header("Origin", origin)
+                        .header("Access-Control-Request-Method", "POST")
+                        .header("Access-Control-Request-Headers", "authorization,content-type"))
+                .andReturn()
+                .getResponse();
+
+        assertEquals(200, response.getStatus());
+        assertEquals(origin, response.getHeader("Access-Control-Allow-Origin"));
+        assertEquals("true", response.getHeader("Access-Control-Allow-Credentials"));
+        assertTrue(response.getHeader("Access-Control-Allow-Methods").contains("POST"));
+        assertNotNull(response.getHeader("Access-Control-Allow-Headers"));
+    }
+
+    @Test void projectVercelPreviewOriginIsAllowedForPreflight() throws Exception {
+        String origin = "https://final-frontend-preview-123-dhavalmaqlaim-5177.vercel.app";
+        var response = mvc.perform(options("/api/packages")
+                        .header("Origin", origin)
+                        .header("Access-Control-Request-Method", "GET")
+                        .header("Access-Control-Request-Headers", "content-type"))
+                .andReturn()
+                .getResponse();
+
+        assertEquals(200, response.getStatus());
+        assertEquals(origin, response.getHeader("Access-Control-Allow-Origin"));
+        assertEquals("true", response.getHeader("Access-Control-Allow-Credentials"));
+    }
 }
