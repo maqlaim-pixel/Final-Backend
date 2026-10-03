@@ -42,6 +42,23 @@ class DatasourceConfigurationTest {
     }
 
     @Test
+    void railwayPgVariablesOverrideSpringAndUrlCredentials() {
+        assertEquals("jdbc:postgresql://railway.internal:5432/railway",
+                DatasourceConfiguration.selectConnectionUrl("railway.internal", "5432", "railway",
+                        "postgresql://url-user:url-pass@other-host/other-db", "jdbc:postgresql://spring-host/spring-db"));
+        assertEquals("railway-user", DatasourceConfiguration.resolveUsername(
+                "railway-user", "old-spring-user", "local-user", "uri-user"));
+        assertEquals("railway-pass", DatasourceConfiguration.resolvePassword(
+                "railway-pass", "old-spring-pass", "local-pass", "uri-pass"));
+    }
+
+    @Test
+    void jdbcUrlIsUsedWhenRailwayHostVariablesAreNotSet() {
+        assertEquals("jdbc:postgresql://local-db:5432/travel",
+                DatasourceConfiguration.selectConnectionUrl("", "5432", "", "", "jdbc:postgresql://local-db:5432/travel"));
+    }
+
+    @Test
     void doesNotSilentlyAcceptAnUnrecognizedUrlScheme() {
         assertThrows(IllegalArgumentException.class,
                 () -> DatasourceConfiguration.toJdbcUrl("mysql://db.example/travel", "", "5432", ""));

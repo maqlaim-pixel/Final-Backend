@@ -21,13 +21,15 @@ public class DatasourceConfiguration {
             @Value("${PGHOST:}") String pgHost,
             @Value("${PGPORT:5432}") String pgPort,
             @Value("${PGDATABASE:}") String pgDatabase,
-            @Value("${DB_USERNAME:${PGUSER:}}") String deploymentUsername,
-            @Value("${DB_PASSWORD:${PGPASSWORD:}}") String deploymentPassword) {
-        String configuredUrl = firstNonBlank(properties.getUrl(), databaseUrl);
-        NormalizedUrl normalized = normalizeUrl(configuredUrl, pgHost, pgPort, pgDatabase);
+            @Value("${PGUSER:}") String pgUsername,
+            @Value("${PGPASSWORD:}") String pgPassword,
+            @Value("${DB_USERNAME:}") String localUsername,
+            @Value("${DB_PASSWORD:}") String localPassword) {
+        String configuredUrl = selectConnectionUrl(pgHost, pgPort, pgDatabase, databaseUrl, properties.getUrl());
+        NormalizedUrl normalized = normalizeUrl(configuredUrl, "", pgPort, "");
 
-        String username = firstNonBlank(properties.getUsername(), deploymentUsername, normalized.username());
-        String password = firstNonBlank(properties.getPassword(), deploymentPassword, normalized.password());
+        String username = resolveUsername(pgUsername, properties.getUsername(), localUsername, normalized.username());
+        String password = resolvePassword(pgPassword, properties.getPassword(), localPassword, normalized.password());
         // DataSourceProperties.build() needs a JDBC URL before the Hikari bean is created.
         properties.setUrl(normalized.jdbcUrl());
         if (username != null) properties.setUsername(username);
@@ -46,20 +48,31 @@ public class DatasourceConfiguration {
         return normalizeUrl(configuredUrl, host, port, database).jdbcUrl();
     }
 
+    static String selectConnectionUrl(String pgHost, String pgPort, String pgDatabase,
+                                      String databaseUrl, String springDatasourceUrl) {
+        if (pgHost != null && !pgHost.isBlank() && pgDatabase != null && !pgDatabase.isBlank()) {
+            return toJdbcUrl("", pgHost, pgPort, pgDatabase);
+        }
+        return firstNonBlank(databaseUrl, springDatasourceUrl);
+    }
+
+    static String resolveUsername(String pgUsername, String springDatasourceUsername,
+                                  String localUsername, String urlUsername) {
+        return firstNonBlank(pgUsername, springDatasourceUsername, localUsername, urlUsername);
+    }
+
+    static String resolvePassword(String pgPassword, String springDatasourcePassword,
+                                  String localPassword, String urlPassword) {
+        return firstNonBlank(pgPassword, springDatasourcePassword, localPassword, urlPassword);
+    }
+
     static NormalizedUrl normalizeUrl(String configuredUrl, String host, String port, String database) {
         String url = configuredUrl == null ? "" : configuredUrl.trim();
         if (url.regionMatches(true, 0, "jdbc:postgresql://", 0, "jdbc:postgresql://".length())) {
             return new NormalizedUrl(url, null, null);
         }
-        String scheme;
-        if (url.regionMatches(true, 0, "postgresql://", 0, "postgresql://".length())) {
-            scheme = "postgresql";
-        } else if (url.regionMatches(true, 0, "postgres://", 0, "postgres://".length())) {
-            scheme = "postgres";
-        } else {
-            scheme = null;
-        }
-        if (scheme != null) {
+        if (url.regionMatches(true, 0, "postgresql://", 0, "postgresql://".length())
+                || url.regionMatches(true, 0, "postgres://", 0, "postgres://".length())) {
             try {
                 URI uri = URI.create(url);
                 String authority = uri.getRawAuthority();
@@ -94,7 +107,7 @@ public class DatasourceConfiguration {
         return URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8);
     }
 
-    private static String firstNonBlank(String... values) {
+    static String firstNonBlank(String... values) {
         for (String value : values) if (value != null && !value.isBlank()) return value;
         return null;
     }
