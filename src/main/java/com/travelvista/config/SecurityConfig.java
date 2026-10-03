@@ -284,6 +284,10 @@ public class SecurityConfig {
                                 AntPathRequestMatcher.antMatcher(
                                         HttpMethod.POST,
                                         "/api/leads/public/submit"
+                                ),
+                                AntPathRequestMatcher.antMatcher(
+                                        HttpMethod.POST,
+                                        "/api/contact-enquiries"
                                 )
                         ).permitAll()
 

@@ -20,6 +20,8 @@ public class DashboardController {
     private final LeadRepository leadRepository;
     private final EnquiryRepository enquiryRepository;
     private final ReviewRepository reviewRepository;
+    private final LocalTravelEnquiryRepository localTravelEnquiryRepository;
+    private final ContactEnquiryRepository contactEnquiryRepository;
 
     public DashboardController(PackageRepository packageRepository,
                                DestinationRepository destinationRepository,
@@ -29,7 +31,9 @@ public class DashboardController {
                                BookingRepository bookingRepository,
                                LeadRepository leadRepository,
                                EnquiryRepository enquiryRepository,
-                               ReviewRepository reviewRepository) {
+                               ReviewRepository reviewRepository,
+                               LocalTravelEnquiryRepository localTravelEnquiryRepository,
+                               ContactEnquiryRepository contactEnquiryRepository) {
         this.packageRepository = packageRepository;
         this.destinationRepository = destinationRepository;
         this.activityRepository = activityRepository;
@@ -39,6 +43,8 @@ public class DashboardController {
         this.leadRepository = leadRepository;
         this.enquiryRepository = enquiryRepository;
         this.reviewRepository = reviewRepository;
+        this.localTravelEnquiryRepository = localTravelEnquiryRepository;
+        this.contactEnquiryRepository = contactEnquiryRepository;
     }
 
     @GetMapping("/stats")
@@ -57,6 +63,10 @@ public class DashboardController {
         stats.put("newLeads", leadRepository.countNew());
         stats.put("totalEnquiries", enquiryRepository.countAll());
         stats.put("totalReviews", reviewRepository.countAll());
+        stats.put("totalLocalTravelEnquiries", localTravelEnquiryRepository.count());
+        stats.put("newLocalTravelEnquiries", localTravelEnquiryRepository.countByStatusIgnoreCase("NEW"));
+        stats.put("totalContactEnquiries", contactEnquiryRepository.count());
+        stats.put("newContactEnquiries", contactEnquiryRepository.countByStatusIgnoreCase("NEW"));
 
         return ResponseEntity.ok(stats);
     }

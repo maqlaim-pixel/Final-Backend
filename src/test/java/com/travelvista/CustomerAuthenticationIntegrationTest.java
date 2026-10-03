@@ -18,6 +18,7 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
@@ -39,7 +40,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * AUTH_TEST_JDBC_URL must point to a disposable schema created by the test runner.
  */
 @EnabledIfEnvironmentVariable(named = "AUTH_TEST_JDBC_URL", matches = ".*currentSchema=tv_auth_test_[a-f0-9]+.*")
-@SpringBootTest(classes = CustomerAuthenticationIntegrationTest.TestApp.class, properties = {
+@SpringBootTest(classes = CustomerAuthenticationIntegrationTest.TestApp.class,
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.datasource.url=${AUTH_TEST_JDBC_URL}", "spring.datasource.username=${AUTH_TEST_DB_USER}",
         "spring.datasource.password=${AUTH_TEST_DB_PASSWORD}", "spring.jpa.hibernate.ddl-auto=update",
         "spring.sql.init.mode=never", "spring.config.import=", "jwt.secret=${AUTH_TEST_JWT_SECRET}"})
@@ -51,10 +53,13 @@ class CustomerAuthenticationIntegrationTest {
     @EntityScan("com.travelvista.model")
     @EnableJpaRepositories("com.travelvista.repository")
     @Import({CustomerAuthController.class, AuthController.class, UserService.class, OtpService.class,
-            JwtUtil.class, JwtAuthFilter.class, SecurityConfig.class, GlobalExceptionHandler.class})
+            JwtUtil.class, JwtAuthFilter.class, SecurityConfig.class, GlobalExceptionHandler.class,
+            com.travelvista.controller.TravelEnquiryController.class,
+            LocalTravelEnquiryService.class, ContactEnquiryService.class})
     static class TestApp {}
 
     @Autowired MockMvc mvc;
+    @LocalServerPort int port;
     @Autowired ObjectMapper json;
     @Autowired UserRepository users;
     @Autowired RoleRepository roles;
@@ -239,6 +244,113 @@ class CustomerAuthenticationIntegrationTest {
             assertEquals(Set.of(200, 400), Set.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS)));
         } finally { pool.shutdownNow(); }
     }
+    @Test void localTravelAndContactEnquiriesPersistAcrossRealHttpRequests() throws Exception {
+        // Reproduce the production failure safely: this test runs only in its disposable schema.
+        User admin = new User("Test Admin", "admin-" + UUID.randomUUID() + "@example.com", "+1415" + String.format("%07d", Math.abs(UUID.randomUUID().getLeastSignificantBits() % 10000000L)),
+                encoder.encode(password), roles.findByName("admin").orElseThrow());
+        admin.setIsActive(true); admin.setEmailVerified(true); users.save(admin);
+        JsonNode adminLogin = httpJson("POST", "/api/admin/login", Map.of("email", admin.getEmail(), "password", password), null, 200);
+        String adminToken = adminLogin.get("token").asText();
+
+        assertTrue(jdbc.queryForObject("select to_regclass(current_schema() || '.local_travel_enquiries') is not null", Boolean.class),
+                "Hibernate ddl-auto=update should create the enquiry table on startup");
+        assertTrue(jdbc.queryForObject("select to_regclass(current_schema() || '.contact_enquiries') is not null", Boolean.class));
+        assertTrue(httpJson("GET", "/api/admin/local-travel-enquiries", null, adminToken, 200).isArray());
+
+        jdbc.execute("DROP TABLE local_travel_enquiries, contact_enquiries");
+        JsonNode missingTableResponse = httpJson("GET", "/api/admin/local-travel-enquiries", null, adminToken, 500);
+        assertTrue(missingTableResponse.toString().contains("unexpected error"));
+        applyEnquiryMigration();
+        JsonNode emptyResponse = httpJson("GET", "/api/admin/local-travel-enquiries", null, adminToken, 200);
+        assertTrue(emptyResponse.isArray());
+        assertEquals(0, emptyResponse.size(), "An empty table must return an empty list, not 500");
+
+        assertColumns("local_travel_enquiries", Set.of("id", "user_id", "service_type", "form_data", "source_url", "status", "admin_notes", "created_at", "updated_at"));
+        assertColumns("contact_enquiries", Set.of("id", "user_id", "name", "email", "phone", "subject", "message", "status", "created_at", "updated_at"));
+
+        JsonNode challenge = httpJson("POST", "/api/auth/register", registration(), null, 200);
+        JsonNode registration = httpJson("POST", "/api/auth/register/verify", verification(challenge, delivered.get(email)), null, 200);
+        assertTrue(jwt.validateToken(registration.get("token").asText()));
+        JsonNode loginChallenge = httpJson("POST", "/api/auth/login", Map.of("email", email, "password", password), null, 200);
+        JsonNode customerLogin = httpJson("POST", "/api/auth/login/verify", verification(loginChallenge, delivered.get(email)), null, 200);
+        String customerToken = customerLogin.get("token").asText();
+
+        Map<String, String> formData = new LinkedHashMap<>();
+        formData.put("transferType", "Arrival"); formData.put("airport", "Mumbai Airport");
+        formData.put("pickupDate", "2030-06-15"); formData.put("pickupTime", "10:30");
+        formData.put("passengers", "2"); formData.put("vehicleType", "Sedan");
+        formData.put("flightNumber", "AI123"); formData.put("dropLocation", "Mumbai Central");
+        formData.put("specialRequests", "Child seat, please");
+        JsonNode localCreate = httpJson("POST", "/api/local-travel/enquiries",
+                Map.of("serviceType", "airport-transfer", "formData", formData, "sourceUrl", "/airport-transfer"), customerToken, 201);
+        long localId = localCreate.get("id").asLong();
+        assertEquals(1, jdbc.queryForObject("select count(*) from local_travel_enquiries where id = ? and user_id = ?", Integer.class,
+                localId, users.findByEmail(email).orElseThrow().getId()));
+        assertEquals(json.writeValueAsString(formData), jdbc.queryForObject("select form_data from local_travel_enquiries where id = ?", String.class, localId));
+
+        JsonNode firstAdminRefresh = httpJson("GET", "/api/admin/local-travel-enquiries", null, adminToken, 200);
+        JsonNode localSummary = findById(firstAdminRefresh, localId);
+        assertEquals("NEW", localSummary.get("status").asText());
+        JsonNode localDetail = httpJson("GET", "/api/admin/local-travel-enquiries/" + localId, null, adminToken, 200);
+        assertEquals(formData, json.convertValue(localDetail.get("formData"), Map.class));
+        assertEquals(email, localDetail.get("customerEmail").asText());
+        assertEquals("Test Customer", localDetail.get("customerName").asText());
+        assertEquals("/airport-transfer", localDetail.get("sourceUrl").asText());
+        httpJson("PATCH", "/api/admin/local-travel-enquiries/" + localId,
+                Map.of("status", "IN_PROGRESS", "adminNotes", "Called customer"), adminToken, 200);
+        JsonNode refreshedLocal = httpJson("GET", "/api/admin/local-travel-enquiries", null, adminToken, 200);
+        assertEquals("IN_PROGRESS", findById(refreshedLocal, localId).get("status").asText());
+        assertEquals("IN_PROGRESS", jdbc.queryForObject("select status from local_travel_enquiries where id = ?", String.class, localId));
+
+        JsonNode contactCreate = httpJson("POST", "/api/contact-enquiries", Map.of(
+                "name", "Guest Contact", "email", "guest@example.com", "phone", "+14155550123",
+                "subject", "Airport pickup", "message", "Please call me about a transfer."), null, 201);
+        long contactId = contactCreate.get("id").asLong();
+        assertEquals(1, jdbc.queryForObject("select count(*) from contact_enquiries where id = ? and user_id is null", Integer.class, contactId));
+        JsonNode contactList = httpJson("GET", "/api/admin/contact-enquiries", null, adminToken, 200);
+        assertEquals("guest@example.com", findById(contactList, contactId).get("email").asText());
+        JsonNode contactDetail = httpJson("GET", "/api/admin/contact-enquiries/" + contactId, null, adminToken, 200);
+        assertEquals("Please call me about a transfer.", contactDetail.get("message").asText());
+        httpJson("PATCH", "/api/admin/contact-enquiries/" + contactId, Map.of("status", "CONTACTED"), adminToken, 200);
+        assertEquals("CONTACTED", findById(httpJson("GET", "/api/admin/contact-enquiries", null, adminToken, 200), contactId).get("status").asText());
+        assertEquals("CONTACTED", jdbc.queryForObject("select status from contact_enquiries where id = ?", String.class, contactId));
+    }
+
+    private JsonNode httpJson(String method, String path, Object body, String token, int expectedStatus) throws Exception {
+        java.net.http.HttpRequest.Builder builder = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create("http://localhost:" + port + path))
+                .header("Accept", "application/json");
+        if (token != null) builder.header("Authorization", "Bearer " + token);
+        java.net.http.HttpRequest.BodyPublisher content = body == null
+                ? java.net.http.HttpRequest.BodyPublishers.noBody()
+                : java.net.http.HttpRequest.BodyPublishers.ofByteArray(json.writeValueAsBytes(body));
+        if (body != null) builder.header("Content-Type", "application/json");
+        java.net.http.HttpResponse<String> response = java.net.http.HttpClient.newHttpClient()
+                .send(builder.method(method, content).build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertEquals(expectedStatus, response.statusCode(), () -> method + " " + path + " returned " + response.statusCode());
+        return response.body() == null || response.body().isBlank() ? json.nullNode() : json.readTree(response.body());
+    }
+
+    private JsonNode findById(JsonNode array, long id) {
+        for (JsonNode node : array) if (node.path("id").asLong() == id) return node;
+        fail("Enquiry " + id + " was missing from the refreshed admin list"); return null;
+    }
+
+    private void assertColumns(String table, Set<String> expected) {
+        Set<String> actual = new HashSet<>(jdbc.queryForList(
+                "select column_name from information_schema.columns where table_schema = current_schema() and table_name = ?", String.class, table));
+        assertTrue(actual.containsAll(expected), () -> table + " is missing columns: " + new HashSet<>(expected) {{ removeAll(actual); }});
+    }
+
+    private void applyEnquiryMigration() throws Exception {
+        String migration = new String(Objects.requireNonNull(getClass().getResourceAsStream("/db/enquiries-migration.sql")).readAllBytes(), StandardCharsets.UTF_8)
+                .replaceAll("(?m)^\\s*--[^\\r\\n]*", "");
+        for (String statement : migration.split(";")) {
+            String sql = statement.trim();
+            if (!sql.isEmpty() && !sql.equalsIgnoreCase("BEGIN") && !sql.equalsIgnoreCase("COMMIT")) jdbc.execute(sql);
+        }
+    }
+
     @Test void databaseRejectsDuplicateNormalizedEmailAndPhone() {
         account(true, "customer");
         assertThrows(org.springframework.dao.DataIntegrityViolationException.class,

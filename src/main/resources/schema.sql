@@ -157,6 +157,7 @@ CREATE TABLE destinations (
     package_count             INTEGER       DEFAULT 0,
     status                    VARCHAR(20)   DEFAULT 'draft',
     featured                  BOOLEAN       DEFAULT FALSE,
+    is_famous                 BOOLEAN       DEFAULT FALSE,
     sort_order                INTEGER       DEFAULT 0,
 
     -- CMS Hero section
@@ -890,6 +891,7 @@ CREATE TABLE destinations (
     package_count             INTEGER       DEFAULT 0,
     status                    VARCHAR(20)   DEFAULT 'draft',
     featured                  BOOLEAN       DEFAULT FALSE,
+    is_famous                 BOOLEAN       DEFAULT FALSE,
     sort_order                INTEGER       DEFAULT 0,
 
     -- CMS Hero section

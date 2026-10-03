@@ -22,6 +22,23 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(ex.getStatus()).body(Map.of("error", ex.getMessage()));
     }
 
+    @ExceptionHandler(com.travelvista.service.RecordNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleNotFound(com.travelvista.service.RecordNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(com.travelvista.service.EnquiryValidationException.class)
+    public ResponseEntity<Map<String, String>> handleEnquiryValidation(com.travelvista.service.EnquiryValidationException ex) {
+        return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(org.springframework.web.bind.MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, String>> handleBeanValidation(org.springframework.web.bind.MethodArgumentNotValidException ex) {
+        String error = ex.getBindingResult().getFieldErrors().stream().findFirst()
+                .map(field -> field.getField() + " " + field.getDefaultMessage()).orElse("Invalid request");
+        return ResponseEntity.badRequest().body(Map.of("error", error));
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<Map<String, String>> handleDataIntegrity(DataIntegrityViolationException ex) {
         String detail = ex.getMostSpecificCause().getMessage();

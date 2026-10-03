@@ -60,6 +60,9 @@ public class Destination {
 
     private Boolean featured = false;
 
+    @Column(name = "is_famous")
+    private Boolean isFamous = false;
+
     @Column(name = "sort_order")
     private Integer sortOrder = 0;
 
@@ -241,6 +244,8 @@ public class Destination {
     public void setStatus(String status) { this.status = status; }
     public Boolean getFeatured() { return featured; }
     public void setFeatured(Boolean featured) { this.featured = featured; }
+    public Boolean getIsFamous() { return isFamous; }
+    public void setIsFamous(Boolean isFamous) { this.isFamous = isFamous; }
     public Integer getSortOrder() { return sortOrder; }
     public void setSortOrder(Integer sortOrder) { this.sortOrder = sortOrder; }
     public LocalDateTime getCreatedAt() { return createdAt; }
